@@ -18,6 +18,8 @@ RENEW_URL = "https://weread.qq.com/web/login/renewal"
 FIX_SYNCKEY_URL = "https://weread.qq.com/web/book/chapterInfos"
 COOKIE_DATA_VARIANTS = [{"rq": "%2Fweb%2Fbook%2Fread", "ql": False},{"rq": "%2Fweb%2Fbook%2Fread", "ql": True},{"rq": "%2Fweb%2Fbook%2Fread"},]
 REQUEST_TIMEOUT = (10, 30)
+READ_FAILURE_LIMIT = 3
+READ_RETRY_DELAY = 5
 SYNCKEY_REPAIR_LIMIT = 3
 SYNCKEY_REPAIR_DELAY = 5
 AUTH_ERROR_CODES = {-2012, -2013}
@@ -100,6 +102,7 @@ refresh_cookie(strict=False)
 index = 1
 lastTime = int(time.time()) - 30
 synckey_repair_attempts = 0
+read_failures = 0
 logging.info(f"一共需要阅读 {READ_NUM} 次。")
 
 while index <= READ_NUM:
@@ -124,20 +127,25 @@ while index <= READ_NUM:
             data=json.dumps(data, separators=(',', ':')),
             timeout=REQUEST_TIMEOUT,
         )
-    except requests.RequestException as exc:
-        ERROR_CODE = f"阅读请求失败：{exc}"
-        logging.error(ERROR_CODE)
-        push(ERROR_CODE, PUSH_METHOD, is_success=False)
-        raise RuntimeError(ERROR_CODE) from exc
-
-    try:
         resData = response.json()
-    except ValueError as exc:
-        ERROR_CODE = f"read 接口返回非 JSON 响应，HTTP {response.status_code}。"
+    except requests.RequestException as exc:
+        if isinstance(exc, requests.exceptions.JSONDecodeError):
+            ERROR_CODE = f"read 接口返回非 JSON 响应，HTTP {response.status_code}。"
+        else:
+            ERROR_CODE = f"阅读请求失败：{exc}"
+        read_failures += 1
+        if read_failures < READ_FAILURE_LIMIT:
+            logging.warning(
+                "%s（%d/%d），%d 秒后重试。",
+                ERROR_CODE, read_failures, READ_FAILURE_LIMIT, READ_RETRY_DELAY,
+            )
+            time.sleep(READ_RETRY_DELAY)
+            continue
         logging.error(ERROR_CODE)
         push(ERROR_CODE, PUSH_METHOD, is_success=False)
         raise RuntimeError(ERROR_CODE) from exc
 
+    read_failures = 0
     logging.debug("response: %s", resData)
 
     if 'succ' in resData:
